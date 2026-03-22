@@ -373,6 +373,15 @@ class TitanAgent:
             max_tokens=settings.titan_max_tokens,
         )
 
+        # Log raw response length for debugging
+        raw_len = len(response.content)
+        separator_count = response.content.count("\n---\n")
+        logger.info(
+            f"Frontend raw response: {raw_len} chars, "
+            f"{separator_count} '---' separators, "
+            f"{response.output_tokens} output tokens"
+        )
+
         parsed = parse_frontend_response(response.content)
         generated = []
         for pf in parsed:
@@ -381,8 +390,12 @@ class TitanAgent:
                 content=pf.content,
                 language=pf.language,
             ))
+            logger.info(f"  Frontend file: {pf.path} ({len(pf.content)} chars)")
 
-        await self._emit("frontend.done", {"module": module_name, "files": len(generated)})
+        await self._emit("frontend.done", {
+            "module": module_name,
+            "files": [g.path.split("/")[-1] for g in generated],
+        })
         return generated
 
     # ─── Validate + Debug ─────────────────────────────────────────────────

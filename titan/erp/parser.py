@@ -2,10 +2,11 @@
 Output parser for Titan model responses.
 
 Handles:
-- ### FILE: path markers (primary format)
-- --- separators between files
+- ### FILE: path markers (primary format, used by backend)
+- --- separators between files (primary format, used by frontend)
 - <think> blocks (stripped from final output)
 - Code fence extraction
+- Content-based file detection for frontend (types.ts, composable, vue pages)
 """
 
 import re
@@ -75,12 +76,29 @@ def parse_frontend_response(raw: str) -> list[ParsedFile]:
     """
     Parse a multi-file frontend response.
 
-    Frontend generates all 6 files in one response:
-    - ### FILE: types.ts
-    - ```typescript ... ```
-    - ---
-    - ### FILE: composables/useLead.ts
-    - ...
+    The Titan-UI model was trained with TWO possible formats:
+
+    Format A (### FILE: markers):
+      ### FILE: types.ts
+      ```typescript ... ```
+      ---
+      ### FILE: composables/useLead.ts
+      ...
+
+    Format B (--- separators only, NO file headers):
+      <think>...</think>
+      import { z } from 'zod'
+      export interface Lead { ... }
+      ---
+      import type { Lead } from '~/modules/crm/types'
+      export function useCrm() { ... }
+      ---
+      <script setup lang="ts">...</script>
+      <template>...</template>
+      ---
+      ...
+
+    Both formats are handled.
     """
     text = strip_think_blocks(raw)
     if not text:
@@ -88,34 +106,193 @@ def parse_frontend_response(raw: str) -> list[ParsedFile]:
 
     files = []
 
-    # Split by ### FILE: markers
+    # Try ### FILE: markers first (Format A)
     pattern = re.compile(r"###\s*FILE:\s*(.+?)(?:\n|$)", re.MULTILINE)
     matches = list(pattern.finditer(text))
 
-    if not matches:
-        # Try splitting by --- separators
-        return _parse_by_separator(text)
+    if matches:
+        for i, match in enumerate(matches):
+            path = match.group(1).strip().strip("`").strip('"').strip("'")
 
-    for i, match in enumerate(matches):
-        path = match.group(1).strip().strip("`").strip('"').strip("'")
+            # Get text between this match and the next (or end)
+            start = match.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            chunk = text[start:end]
 
-        # Get text between this match and the next (or end)
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        chunk = text[start:end]
+            # Remove trailing --- separator
+            chunk = re.sub(r"\n---\s*$", "", chunk.strip())
 
-        # Remove trailing --- separator
-        chunk = re.sub(r"\n---\s*$", "", chunk.strip())
+            content = extract_code_from_fences(chunk)
+            if content:
+                language = _detect_language(path)
+                path = _clean_frontend_path(path)
+                files.append(ParsedFile(path=path, content=content, language=language))
 
-        content = extract_code_from_fences(chunk)
-        if content:
-            language = _detect_language(path)
-            # Remove leading path duplicates (e.g. modules/crm/ prefix already in path)
-            path = _clean_frontend_path(path)
-            files.append(ParsedFile(path=path, content=content, language=language))
+        logger.info(f"Parsed {len(files)} frontend files (### FILE: format)")
+        return files
 
-    logger.info(f"Parsed {len(files)} frontend files")
+    # Format B: Split by --- separators (the model's primary trained format)
+    files = _parse_by_separator_smart(text)
+    logger.info(f"Parsed {len(files)} frontend files (--- separator format)")
     return files
+
+
+def _parse_by_separator_smart(text: str) -> list[ParsedFile]:
+    """
+    Parse frontend output split by --- separators.
+
+    Uses content-based detection to determine what each chunk is:
+    1. TypeScript with 'export interface' → types.ts
+    2. TypeScript with 'export function use' → composable
+    3. Vue with DataTable / list / index → list page
+    4. Vue with form / @submit → create/form page
+    5. Vue with route.params / detail → detail page
+    6. Vue with onMounted + fetch by ID → edit page
+
+    The expected order from training data is:
+    1. types.ts
+    2. composables/use{Entity}.ts
+    3. pages/{entity}/index.vue (list)
+    4. pages/{entity}/create.vue (form)
+    5. pages/{entity}/[id]/edit.vue (edit)
+    6. pages/{entity}/[id]/index.vue (detail)
+    """
+    # Split by --- (on its own line)
+    chunks = re.split(r"\n---\n", text)
+    files = []
+
+    # Detect entity name from the first chunk (types.ts)
+    entity_name = None
+    entity_lower = None
+
+    for i, chunk in enumerate(chunks):
+        chunk = chunk.strip()
+        if not chunk or len(chunk) < 20:
+            continue
+
+        # Check if this chunk has code fences
+        content = extract_code_from_fences(chunk)
+        if not content or len(content) < 10:
+            continue
+
+        file_type = _detect_file_type(content, i)
+
+        # Extract entity name from types.ts (first file)
+        if file_type == "types" and entity_name is None:
+            entity_match = re.search(r"export\s+interface\s+(\w+)", content)
+            if entity_match:
+                entity_name = entity_match.group(1)
+                entity_lower = entity_name[0].lower() + entity_name[1:]
+                # Convert CamelCase to kebab-case for paths
+                entity_lower = re.sub(r'(?<!^)(?=[A-Z])', '-', entity_lower).lower()
+                # Also try simple lowercase
+                if '-' not in entity_lower:
+                    entity_lower = entity_name.lower()
+
+        # Assign path and language based on detected type
+        path, language = _assign_path(file_type, entity_name, entity_lower, i)
+
+        files.append(ParsedFile(path=path, content=content, language=language))
+
+    return files
+
+
+def _detect_file_type(content: str, index: int) -> str:
+    """Detect what type of frontend file this content represents."""
+
+    has_vue_template = bool(re.search(r"<template>|<template\s", content))
+    has_vue_script = bool(re.search(r"<script\s+setup", content))
+    is_vue = has_vue_template or has_vue_script
+
+    if not is_vue:
+        # TypeScript file
+        if "export interface" in content or "export type " in content:
+            if "z.object" in content or "z.string" in content:
+                # Has both interface and Zod schema → types.ts
+                return "types"
+            return "types"
+        if "export function use" in content or "export const use" in content:
+            return "composable"
+        # Default TS
+        return "types" if index == 0 else "composable"
+
+    # Vue file — determine which page type
+    content_lower = content.lower()
+
+    # List page indicators
+    is_list = (
+        "DataTable" in content
+        or "datatable" in content_lower
+        or ("paginator" in content_lower and "rows" in content_lower)
+        or "fetchAll" in content
+        or "fetchApproval" in content  # fetchXxxs pattern
+    )
+
+    # Form/Create page indicators
+    is_form = (
+        "@submit" in content
+        or "onSubmit" in content
+        or ("formData" in content and "validate" in content)
+        or re.search(r"emit\s*\(\s*['\"]submit", content)
+    )
+
+    # Edit page indicators (has route params AND pre-fills form)
+    is_edit = (
+        ("route.params" in content or "useRoute" in content)
+        and ("update" in content_lower or "edit" in content_lower or "onMounted" in content)
+        and is_form
+    )
+
+    # Detail page indicators
+    is_detail = (
+        ("route.params" in content or "useRoute" in content)
+        and not is_form
+        and ("detail" in content_lower or "currentApproval" in content_lower
+             or re.search(r"fetch\w+\(\s*id", content))
+    )
+
+    if is_edit:
+        return "edit_page"
+    if is_form:
+        return "form_page"
+    if is_list:
+        return "list_page"
+    if is_detail:
+        return "detail_page"
+
+    # Fallback by position (trained order)
+    position_map = {
+        0: "list_page",   # After types and composable (already parsed as non-vue)
+        1: "form_page",
+        2: "edit_page",
+        3: "detail_page",
+    }
+    # Count how many vue files we've seen before this one
+    return position_map.get(index - 2, f"page_{index}")
+
+
+def _assign_path(file_type: str, entity_name: str | None, entity_lower: str | None, index: int) -> tuple[str, str]:
+    """Assign file path and language based on detected file type."""
+    e = entity_name or "Entity"
+    el = entity_lower or "entity"
+
+    paths = {
+        "types": (f"types.ts", "typescript"),
+        "composable": (f"composables/use{e}.ts", "typescript"),
+        "list_page": (f"pages/{el}/index.vue", "vue"),
+        "form_page": (f"pages/{el}/create.vue", "vue"),
+        "edit_page": (f"pages/{el}/[id]/edit.vue", "vue"),
+        "detail_page": (f"pages/{el}/[id]/index.vue", "vue"),
+    }
+
+    result = paths.get(file_type)
+    if result:
+        return result
+
+    # Fallback
+    if file_type.startswith("page_"):
+        return (f"pages/{el}/page_{index}.vue", "vue")
+    return (f"file_{index}.ts", "typescript")
 
 
 def parse_debug_response(raw: str) -> list[ParsedFile]:
@@ -149,31 +326,6 @@ def parse_debug_response(raw: str) -> list[ParsedFile]:
 
         content = extract_code_from_fences(chunk)
         if content:
-            language = _detect_language(path)
-            files.append(ParsedFile(path=path, content=content, language=language))
-
-    return files
-
-
-def _parse_by_separator(text: str) -> list[ParsedFile]:
-    """Fallback: split by --- separators and try to detect file headers."""
-    chunks = re.split(r"\n---\n", text)
-    files = []
-
-    for chunk in chunks:
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-
-        # Try to find a file path in the first lines
-        path = "unknown.ts"
-        first_line = chunk.split("\n")[0]
-        if re.match(r"^[\w/\[\]._-]+\.\w+", first_line):
-            path = first_line.strip()
-            chunk = "\n".join(chunk.split("\n")[1:])
-
-        content = extract_code_from_fences(chunk)
-        if content and len(content) > 10:
             language = _detect_language(path)
             files.append(ParsedFile(path=path, content=content, language=language))
 
