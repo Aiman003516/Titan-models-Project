@@ -136,8 +136,13 @@ def validate_backend_file(file_path: str, code: str) -> FileResult:
         has_legacy = bool(re.search(r"Column\(", code))
         _check(result, "sqlalchemy_2_0_style", has_mapped and not has_legacy)
 
-        # 2. tenant_id
-        _check(result, "tenant_id_present", "tenant_id" in code)
+        # 2. tenant_id (direct field OR via mixin)
+        has_tenant = (
+            "tenant_id" in code
+            or "TenantMixin" in code
+            or "TenantModel" in code
+        )
+        _check(result, "tenant_id_present", has_tenant)
 
         # 3. cascade on collection relationships (parent→children only)
         # Only List[...] / list[...] relationships need cascade.
@@ -151,11 +156,12 @@ def validate_backend_file(file_path: str, code: str) -> FileResult:
             )
             _check(result, "cascade_delete_orphan", all_have_cascade)
 
-        # 4. Timestamps use func.now()
+        # 4. Timestamps use func.now() (or via mixin)
         if "created_at" in code or "updated_at" in code:
             uses_func_now = bool(re.search(r"func\.now\(\)", code))
+            uses_mixin = "TimestampMixin" in code
             no_utcnow = "datetime.utcnow" not in code
-            _check(result, "timestamps_func_now", uses_func_now and no_utcnow)
+            _check(result, "timestamps_func_now", (uses_func_now or uses_mixin) and no_utcnow)
 
         # 5. Monetary fields use Numeric, not Float
         money_keywords = ("price", "amount", "total", "cost", "fee", "salary", "revenue", "balance")
@@ -171,6 +177,7 @@ def validate_backend_file(file_path: str, code: str) -> FileResult:
     # Schema checks (for any schema file)
     if is_schema:
         if "Response" in code or "Read" in code:
+            # Accept both ConfigDict(from_attributes=True) and class Config: from_attributes = True
             has_config = bool(re.search(r"from_attributes\s*=\s*True", code))
             _check(result, "schema_from_attributes", has_config)
 
