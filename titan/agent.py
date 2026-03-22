@@ -6,6 +6,8 @@ Orchestrates full ERP module generation:
 4. Frontend (single-shot) → 5. Validate → 6. Debug (Groq) → 7. Package
 """
 
+import asyncio
+import inspect
 import logging
 import re
 import time
@@ -135,11 +137,13 @@ class TitanAgent:
         self.debugger = TitanDebugger(self.groq, max_retries=settings.max_debug_retries)
         self.on_event = on_event
 
-    def _emit(self, event: str, data: Any = None):
+    async def _emit(self, event: str, data: Any = None):
         logger.info(f"[titan] {event}: {data}")
         if self.on_event:
             try:
-                self.on_event(event, data or {})
+                result = self.on_event(event, data or {})
+                if inspect.isawaitable(result):
+                    await result
             except Exception:
                 pass
 
@@ -155,7 +159,7 @@ class TitanAgent:
         if not file_order:
             raise ValueError(f"No file order for architecture: {arch}")
 
-        self._emit("backend.start", {"module": module_name, "arch": arch, "files": len(file_order)})
+        await self._emit("backend.start", {"module": module_name, "arch": arch, "files": len(file_order)})
 
         conversation = []
         generated = []
@@ -169,7 +173,7 @@ class TitanAgent:
 
             conversation.append({"role": "user", "content": user_prompt})
 
-            self._emit("backend.file", {
+            await self._emit("backend.file", {
                 "module": module_name, "file": file_path,
                 "turn": i + 1, "total": len(file_order),
             })
@@ -201,19 +205,19 @@ class TitanAgent:
             # Accumulate context
             conversation.append({"role": "assistant", "content": response.content})
 
-            self._emit("backend.file.done", {
+            await self._emit("backend.file.done", {
                 "file": file_path,
                 "tokens_in": response.input_tokens,
                 "tokens_out": response.output_tokens,
                 "time_ms": response.execution_time_ms,
             })
 
-        self._emit("backend.done", {"module": module_name, "files": len(generated)})
+        await self._emit("backend.done", {"module": module_name, "files": len(generated)})
         return generated
 
     # ─── module_def Extraction ────────────────────────────────────────────
 
-    def extract_module_def(self, module_name: str, backend_files: list[GeneratedFile]) -> Optional[dict]:
+    async def extract_module_def(self, module_name: str, backend_files: list[GeneratedFile]) -> Optional[dict]:
         """Parse generated backend code to build a module_def for the frontend prompt."""
         models_file = None
         router_file = None
@@ -322,7 +326,7 @@ class TitanAgent:
                             "required": True,
                         })
 
-        self._emit("module_def.extracted", {
+        await self._emit("module_def.extracted", {
             "entity": primary_entity, "fields": len(fields),
             "has_lines": has_lines, "has_statuses": statuses is not None,
         })
@@ -343,7 +347,7 @@ class TitanAgent:
     async def generate_frontend(
         self, module_name: str, module_def: Optional[dict] = None
     ) -> list[GeneratedFile]:
-        self._emit("frontend.start", {"module": module_name})
+        await self._emit("frontend.start", {"module": module_name})
 
         if module_def:
             user_prompt = build_frontend_prompt(
@@ -378,7 +382,7 @@ class TitanAgent:
                 language=pf.language,
             ))
 
-        self._emit("frontend.done", {"module": module_name, "files": len(generated)})
+        await self._emit("frontend.done", {"module": module_name, "files": len(generated)})
         return generated
 
     # ─── Validate + Debug ─────────────────────────────────────────────────
@@ -399,7 +403,7 @@ class TitanAgent:
         fe_dict = {f.path: f.content for f in frontend_files}
         fe_val = validate_frontend_module(module_name, fe_dict)
 
-        self._emit("validation", {
+        await self._emit("validation", {
             "module": module_name,
             "backend_rate": be_val.pass_rate,
             "frontend_rate": fe_val.pass_rate,
@@ -411,7 +415,7 @@ class TitanAgent:
 
         # Debug backend
         if be_val.all_failures:
-            self._emit("debug.backend.start", {"failures": len(be_val.all_failures)})
+            await self._emit("debug.backend.start", {"failures": len(be_val.all_failures)})
             be_dict = await self.debugger.debug_files(be_dict, be_val, "backend")
             be_val = validate_backend_module(module_name, be_dict)
             backend_files = [
@@ -419,11 +423,11 @@ class TitanAgent:
                 for p, c in be_dict.items()
             ]
             debug_count += 1
-            self._emit("debug.backend.done", {"pass_rate": be_val.pass_rate})
+            await self._emit("debug.backend.done", {"pass_rate": be_val.pass_rate})
 
         # Debug frontend
         if fe_val.all_failures:
-            self._emit("debug.frontend.start", {"failures": len(fe_val.all_failures)})
+            await self._emit("debug.frontend.start", {"failures": len(fe_val.all_failures)})
             fe_dict = await self.debugger.debug_files(fe_dict, fe_val, "frontend")
             fe_val = validate_frontend_module(module_name, fe_dict)
             frontend_files = [
@@ -432,7 +436,7 @@ class TitanAgent:
                 for pf_lang in [("vue" if p.endswith(".vue") else "typescript")]
             ]
             debug_count += 1
-            self._emit("debug.frontend.done", {"pass_rate": fe_val.pass_rate})
+            await self._emit("debug.frontend.done", {"pass_rate": fe_val.pass_rate})
 
         return backend_files, frontend_files, be_val.pass_rate, fe_val.pass_rate, debug_count
 
@@ -443,14 +447,14 @@ class TitanAgent:
         arch = self.select_architecture(module_name)
         result = ModuleResult(module_name=module_name, architecture=arch)
 
-        self._emit("module.start", {"module": module_name, "arch": arch})
+        await self._emit("module.start", {"module": module_name, "arch": arch})
 
         try:
             # 1. Backend
             result.backend_files = await self.generate_backend(module_name, arch)
 
             # 2. Extract module_def
-            module_def = self.extract_module_def(module_name, result.backend_files)
+            module_def = await self.extract_module_def(module_name, result.backend_files)
 
             # 3. Frontend
             result.frontend_files = await self.generate_frontend(module_name, module_def)
@@ -469,10 +473,10 @@ class TitanAgent:
         except Exception as e:
             result.errors.append(str(e))
             logger.exception(f"Failed to build {module_name}: {e}")
-            self._emit("module.error", {"module": module_name, "error": str(e)})
+            await self._emit("module.error", {"module": module_name, "error": str(e)})
 
         result.generation_time_seconds = time.time() - start
-        self._emit("module.done", {
+        await self._emit("module.done", {
             "module": module_name,
             "time": f"{result.generation_time_seconds:.1f}s",
             "backend_rate": f"{result.backend_pass_rate:.0%}",
@@ -486,7 +490,7 @@ class TitanAgent:
         start = time.time()
         build = ERPBuildResult()
 
-        self._emit("erp.start", {"modules": module_names, "count": len(module_names)})
+        await self._emit("erp.start", {"modules": module_names, "count": len(module_names)})
 
         for name in module_names:
             result = await self.build_module(name)
@@ -507,7 +511,7 @@ class TitanAgent:
                 rates.append(m.frontend_pass_rate)
         build.overall_pass_rate = sum(rates) / len(rates) if rates else 0.0
 
-        self._emit("erp.done", {
+        await self._emit("erp.done", {
             "modules": len(build.modules),
             "files": build.total_files,
             "time": f"{build.total_time_seconds:.1f}s",
