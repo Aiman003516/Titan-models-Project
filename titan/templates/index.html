@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Titan ERP Generator</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --surface2: #334155;
+            --accent: #3b82f6;
+            --accent2: #8b5cf6;
+            --text: #e2e8f0;
+            --text2: #94a3b8;
+            --success: #22c55e;
+            --error: #ef4444;
+            --warn: #f59e0b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
+        h1 {
+            font-size: 2rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+        .subtitle { color: var(--text2); margin-bottom: 2rem; }
+        .card {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid var(--surface2);
+        }
+        .card h2 { font-size: 1.1rem; margin-bottom: 1rem; color: var(--text); }
+        .modules-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 0.5rem;
+        }
+        .module-chip {
+            background: var(--surface2);
+            border: 2px solid transparent;
+            border-radius: 8px;
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.85rem;
+            text-align: center;
+        }
+        .module-chip:hover { border-color: var(--accent); }
+        .module-chip.selected {
+            border-color: var(--accent);
+            background: rgba(59, 130, 246, 0.15);
+        }
+        .module-chip .arch {
+            font-size: 0.65rem;
+            color: var(--text2);
+            display: block;
+            margin-top: 2px;
+        }
+        .btn {
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0.75rem 2rem;
+            font-size: 1rem;
+            cursor: pointer;
+            font-weight: 600;
+            transition: opacity 0.2s;
+            width: 100%;
+            margin-top: 1rem;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .events {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            max-height: 500px;
+            overflow-y: auto;
+            line-height: 1.6;
+        }
+        .event-line { padding: 2px 0; }
+        .event-line .tag {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            margin-right: 6px;
+        }
+        .tag-info { background: rgba(59,130,246,0.2); color: var(--accent); }
+        .tag-ok { background: rgba(34,197,94,0.2); color: var(--success); }
+        .tag-warn { background: rgba(245,158,11,0.2); color: var(--warn); }
+        .tag-err { background: rgba(239,68,68,0.2); color: var(--error); }
+        .summary {
+            background: var(--surface2);
+            border-radius: 8px;
+            padding: 1rem;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        .stat {
+            text-align: center;
+            padding: 1rem;
+            background: var(--surface2);
+            border-radius: 8px;
+        }
+        .stat .value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .stat .label { font-size: 0.75rem; color: var(--text2); margin-top: 4px; }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <h1>⚡ Titan ERP Generator</h1>
+        <p class="subtitle">Generate production-grade ERP modules with fine-tuned AI models</p>
+
+        <div class="card" id="module-select">
+            <h2>Select Modules</h2>
+            <div class="modules-grid" id="modules-grid"></div>
+            <button class="btn" id="build-btn" onclick="startBuild()">🚀 Generate ERP Modules</button>
+        </div>
+
+        <div class="card" id="stats-card" style="display:none">
+            <div class="stats">
+                <div class="stat"><div class="value" id="s-modules">0</div><div class="label">Modules</div></div>
+                <div class="stat"><div class="value" id="s-files">0</div><div class="label">Files</div></div>
+                <div class="stat"><div class="value" id="s-rate">-</div><div class="label">Pass Rate</div></div>
+                <div class="stat"><div class="value" id="s-time">-</div><div class="label">Time</div></div>
+            </div>
+        </div>
+
+        <div class="card" id="events-card" style="display:none">
+            <h2>Build Log</h2>
+            <div class="events" id="events"></div>
+        </div>
+
+        <div class="card" id="summary-card" style="display:none">
+            <h2>Build Summary</h2>
+            <div class="summary" id="summary"></div>
+            <button class="btn" id="download-btn" style="display:none" onclick="downloadZip()">📦 Download ZIP</button>
+        </div>
+    </div>
+
+    <script>
+        const selected = new Set();
+        let currentBuildId = null;
+
+        // Load modules
+        fetch('/api/modules').then(r => r.json()).then(data => {
+            const grid = document.getElementById('modules-grid');
+            data.modules.forEach(m => {
+                const chip = document.createElement('div');
+                chip.className = 'module-chip';
+                chip.dataset.name = m.name;
+                chip.innerHTML = `${m.display_name}<span class="arch">${m.architecture}</span>`;
+                chip.onclick = () => {
+                    if (selected.has(m.name)) {
+                        selected.delete(m.name);
+                        chip.classList.remove('selected');
+                    } else {
+                        selected.add(m.name);
+                        chip.classList.add('selected');
+                    }
+                };
+                grid.appendChild(chip);
+            });
+        });
+
+        function addEvent(text, type = 'info') {
+            const events = document.getElementById('events');
+            const line = document.createElement('div');
+            line.className = 'event-line';
+            const tagClass = { info: 'tag-info', ok: 'tag-ok', warn: 'tag-warn', err: 'tag-err' }[type] || 'tag-info';
+            const time = new Date().toLocaleTimeString();
+            line.innerHTML = `<span class="tag ${tagClass}">${time}</span> ${text}`;
+            events.appendChild(line);
+            events.scrollTop = events.scrollHeight;
+        }
+
+        async function startBuild() {
+            if (selected.size === 0) return alert('Select at least one module');
+
+            const btn = document.getElementById('build-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Generating...';
+
+            document.getElementById('events-card').style.display = '';
+            document.getElementById('stats-card').style.display = '';
+            document.getElementById('events').innerHTML = '';
+            document.getElementById('s-modules').textContent = selected.size;
+
+            const modules = [...selected].join(',');
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${protocol}//${location.host}/ws/build?modules=${modules}`);
+
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                const { event, data } = msg;
+
+                if (event.includes('.error') || event === 'error') {
+                    addEvent(`❌ ${event}: ${JSON.stringify(data)}`, 'err');
+                } else if (event.includes('.done') || event === 'build.complete') {
+                    addEvent(`✅ ${event}: ${JSON.stringify(data)}`, 'ok');
+                } else if (event.includes('debug')) {
+                    addEvent(`🔧 ${event}: ${JSON.stringify(data)}`, 'warn');
+                } else {
+                    addEvent(`${event}: ${JSON.stringify(data)}`);
+                }
+
+                if (event === 'build.complete') {
+                    document.getElementById('summary-card').style.display = '';
+                    document.getElementById('summary').textContent = data.summary || '';
+                    document.getElementById('s-files').textContent = data.total_files || 0;
+                    document.getElementById('s-rate').textContent = data.pass_rate || '-';
+                    document.getElementById('s-time').textContent = data.time || '-';
+                    btn.disabled = false;
+                    btn.textContent = '🚀 Generate ERP Modules';
+                }
+            };
+
+            ws.onerror = () => {
+                addEvent('WebSocket error — falling back to REST polling', 'err');
+                btn.disabled = false;
+                btn.textContent = '🚀 Generate ERP Modules';
+                fallbackRestBuild([...selected]);
+            };
+
+            ws.onclose = () => {
+                btn.disabled = false;
+                btn.textContent = '🚀 Generate ERP Modules';
+            };
+        }
+
+        async function fallbackRestBuild(modules) {
+            const resp = await fetch('/api/build', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(modules),
+            });
+            const data = await resp.json();
+            currentBuildId = data.build_id;
+            addEvent(`Build started: ${data.build_id}`);
+            pollBuild(data.build_id);
+        }
+
+        async function pollBuild(buildId) {
+            const resp = await fetch(`/api/build/${buildId}`);
+            const data = await resp.json();
+            addEvent(`Status: ${data.status}`);
+
+            if (data.status === 'done') {
+                document.getElementById('summary-card').style.display = '';
+                document.getElementById('summary').textContent = data.summary || '';
+                document.getElementById('download-btn').style.display = '';
+                currentBuildId = buildId;
+            } else if (data.status === 'error') {
+                addEvent(`Error: ${data.error}`, 'err');
+            } else {
+                setTimeout(() => pollBuild(buildId), 5000);
+            }
+        }
+
+        async function downloadZip() {
+            if (currentBuildId) {
+                window.location.href = `/api/build/${currentBuildId}/download`;
+            }
+        }
+    </script>
+</body>
+</html>
