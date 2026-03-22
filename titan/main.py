@@ -184,22 +184,42 @@ async def ws_build(websocket: WebSocket, modules: str = Query(...)):
             pass
 
     agent = TitanAgent(on_event=on_event)
+    build_id = str(uuid.uuid4())[:8]
 
     try:
         await websocket.send_json({
             "event": "build.start",
-            "data": {"modules": module_list},
+            "data": {"modules": module_list, "build_id": build_id},
         })
 
         result = await agent.build_erp(module_list)
 
+        # Store result for ZIP download
+        builds[build_id] = {
+            "id": build_id,
+            "status": "done",
+            "modules": module_list,
+            "result": result,
+            "summary": result.summary(),
+        }
+
+        # Build file listing for the UI
+        file_list = []
+        for m in result.modules:
+            for f in m.backend_files:
+                file_list.append({"path": f.path, "language": f.language, "content": f.content})
+            for f in m.frontend_files:
+                file_list.append({"path": f.path, "language": f.language, "content": f.content})
+
         await websocket.send_json({
             "event": "build.complete",
             "data": {
+                "build_id": build_id,
                 "summary": result.summary(),
                 "total_files": result.total_files,
                 "pass_rate": f"{result.overall_pass_rate:.0%}",
                 "time": f"{result.total_time_seconds:.1f}s",
+                "files": file_list,
             },
         })
 

@@ -131,6 +131,50 @@
             color: var(--accent);
         }
         .stat .label { font-size: 0.75rem; color: var(--text2); margin-top: 4px; }
+        .file-item {
+            background: var(--surface2);
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+            overflow: hidden;
+        }
+        .file-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .file-header:hover { background: rgba(255,255,255,0.05); }
+        .file-header .path { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; }
+        .file-header .lang {
+            font-size: 0.65rem;
+            background: rgba(59,130,246,0.2);
+            color: var(--accent);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+        .file-code {
+            display: none;
+            background: #0d1117;
+            padding: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 400px;
+            overflow-y: auto;
+            border-top: 1px solid var(--surface);
+        }
+        .file-code.open { display: block; }
+        .btn-row { display: flex; gap: 0.5rem; margin-top: 1rem; }
+        .btn-row .btn { flex: 1; }
+        .btn-secondary {
+            background: var(--surface2);
+            color: var(--text);
+            border: 1px solid var(--accent);
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 </head>
@@ -162,7 +206,14 @@
         <div class="card" id="summary-card" style="display:none">
             <h2>Build Summary</h2>
             <div class="summary" id="summary"></div>
-            <button class="btn" id="download-btn" style="display:none" onclick="downloadZip()">📦 Download ZIP</button>
+            <div class="btn-row">
+                <button class="btn" id="download-btn" style="display:none" onclick="downloadZip()">📦 Download ZIP</button>
+            </div>
+        </div>
+
+        <div class="card" id="files-card" style="display:none">
+            <h2>Generated Files <span id="file-count" style="color:var(--text2);font-size:0.85rem"></span></h2>
+            <div id="files-list"></div>
         </div>
     </div>
 
@@ -202,6 +253,31 @@
             events.scrollTop = events.scrollHeight;
         }
 
+        function renderFiles(files) {
+            if (!files || files.length === 0) return;
+            const container = document.getElementById('files-list');
+            container.innerHTML = '';
+            document.getElementById('files-card').style.display = '';
+            document.getElementById('file-count').textContent = `(${files.length} files)`;
+
+            files.forEach((f, i) => {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                item.innerHTML = `
+                    <div class="file-header" onclick="this.nextElementSibling.classList.toggle('open')">
+                        <span class="path">📄 ${f.path}</span>
+                        <span class="lang">${f.language}</span>
+                    </div>
+                    <div class="file-code">${escapeHtml(f.content)}</div>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+
         async function startBuild() {
             if (selected.size === 0) return alert('Select at least one module');
 
@@ -211,6 +287,8 @@
 
             document.getElementById('events-card').style.display = '';
             document.getElementById('stats-card').style.display = '';
+            document.getElementById('summary-card').style.display = 'none';
+            document.getElementById('files-card').style.display = 'none';
             document.getElementById('events').innerHTML = '';
             document.getElementById('s-modules').textContent = selected.size;
 
@@ -222,24 +300,33 @@
                 const msg = JSON.parse(e.data);
                 const { event, data } = msg;
 
+                // Don't dump full file contents into the log
+                const logData = {...data};
+                if (logData.files) logData.files = `[${logData.files.length} files]`;
+
                 if (event.includes('.error') || event === 'error') {
-                    addEvent(`❌ ${event}: ${JSON.stringify(data)}`, 'err');
+                    addEvent(`❌ ${event}: ${JSON.stringify(logData)}`, 'err');
                 } else if (event.includes('.done') || event === 'build.complete') {
-                    addEvent(`✅ ${event}: ${JSON.stringify(data)}`, 'ok');
+                    addEvent(`✅ ${event}: ${JSON.stringify(logData)}`, 'ok');
                 } else if (event.includes('debug')) {
-                    addEvent(`🔧 ${event}: ${JSON.stringify(data)}`, 'warn');
+                    addEvent(`🔧 ${event}: ${JSON.stringify(logData)}`, 'warn');
                 } else {
-                    addEvent(`${event}: ${JSON.stringify(data)}`);
+                    addEvent(`${event}: ${JSON.stringify(logData)}`);
                 }
 
                 if (event === 'build.complete') {
+                    currentBuildId = data.build_id;
                     document.getElementById('summary-card').style.display = '';
                     document.getElementById('summary').textContent = data.summary || '';
+                    document.getElementById('download-btn').style.display = '';
                     document.getElementById('s-files').textContent = data.total_files || 0;
                     document.getElementById('s-rate').textContent = data.pass_rate || '-';
                     document.getElementById('s-time').textContent = data.time || '-';
                     btn.disabled = false;
                     btn.textContent = '🚀 Generate ERP Modules';
+
+                    // Render file viewer
+                    if (data.files) renderFiles(data.files);
                 }
             };
 
