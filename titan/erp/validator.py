@@ -139,10 +139,17 @@ def validate_backend_file(file_path: str, code: str) -> FileResult:
         # 2. tenant_id
         _check(result, "tenant_id_present", "tenant_id" in code)
 
-        # 3. cascade on relationships
-        if "relationship" in code:
-            has_cascade = bool(re.search(r'cascade\s*=\s*["\']all,\s*delete-orphan["\']', code))
-            _check(result, "cascade_delete_orphan", has_cascade)
+        # 3. cascade on collection relationships (parent→children only)
+        # Only List[...] / list[...] relationships need cascade.
+        # Single FK lookups like `manager: Mapped["Employee"]` do NOT need cascade.
+        collection_rels = re.findall(
+            r'Mapped\[(?:List|list)\[.*?\]\]\s*=\s*relationship\(([^)]+)\)', code
+        )
+        if collection_rels:
+            all_have_cascade = all(
+                'delete-orphan' in rel for rel in collection_rels
+            )
+            _check(result, "cascade_delete_orphan", all_have_cascade)
 
         # 4. Timestamps use func.now()
         if "created_at" in code or "updated_at" in code:

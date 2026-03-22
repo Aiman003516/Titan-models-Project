@@ -40,16 +40,18 @@ BACKEND_FIX_DESCRIPTIONS = {
         ),
     },
     "cascade_delete_orphan": {
-        "rule": "Parent-child ORM relationships MUST use cascade='all, delete-orphan' "
-                "so deleting a parent automatically removes orphaned children.",
+        "rule": "Parent-to-children COLLECTION relationships (using Mapped[List[...]] or Mapped[list[...]]) "
+                "MUST use cascade='all, delete-orphan'. Single FK-lookup relationships do NOT need cascade.",
         "fix": (
-            'Add cascade to every parent-side relationship:\n'
-            '  items: Mapped[list["OrderLine"]] = relationship(\n'
-            '      "OrderLine",\n'
-            '      back_populates="order",\n'
+            'Add cascade ONLY to collection (List[...]) relationships:\n'
+            '  employees: Mapped[list["Employee"]] = relationship(\n'
+            '      "Employee",\n'
+            '      back_populates="department",\n'
             '      cascade="all, delete-orphan",\n'
             '      lazy="selectin",\n'
-            '  )'
+            '  )\n'
+            'Do NOT add cascade to single FK lookups like:\n'
+            '  manager: Mapped["Employee"] = relationship(foreign_keys=[manager_id])'
         ),
     },
     "timestamps_func_now": {
