@@ -3,6 +3,9 @@ Validators for Titan-generated ERP code.
 
 Backend: 9 regex-based checks from the training data system prompt.
 Frontend: 15 regex-based checks from the validation scripts.
+
+IMPORTANT: Only apply ORM checks to infrastructure/ORM model files,
+NOT to DDD domain model files (which are plain Python classes).
 """
 
 import re
@@ -75,14 +78,60 @@ def _check(result: FileResult, name: str, condition: bool):
         result.failed.append(name)
 
 
+def _is_orm_file(file_path: str) -> bool:
+    """
+    Determine if a file should contain ORM models (SQLAlchemy).
+
+    ORM files: infrastructure/models.py, models.py (service_layer),
+               write_models.py, orm.py, adapters/persistence/orm.py
+    NOT ORM:   domain/models.py (plain Python classes in DDD)
+    """
+    p = file_path.lower()
+
+    # Explicitly NOT ORM: domain layer models
+    if "domain/models" in p or "domain/aggregates" in p:
+        return False
+
+    # ORM files
+    if "infrastructure/models" in p:
+        return True
+    if "write_models" in p:
+        return True
+    if "adapters/persistence" in p:
+        return True
+    if p.endswith("/orm.py"):
+        return True
+    # For service_layer (flat layout), models.py IS the ORM file
+    # but only if it's not under domain/
+    if p.endswith("models.py") and "domain" not in p:
+        return True
+
+    return False
+
+
+def _is_schema_file(file_path: str) -> bool:
+    p = file_path.lower()
+    return "schemas" in p
+
+
+def _is_router_file(file_path: str) -> bool:
+    p = file_path.lower()
+    return p.endswith("router.py")
+
+
 # ─── Backend checks ──────────────────────────────────────────────────────────
 
 
 def validate_backend_file(file_path: str, code: str) -> FileResult:
     result = FileResult(file_path=file_path)
 
-    # 1. SQLAlchemy 2.0 style
-    if "models" in file_path or "orm" in file_path or "write_models" in file_path:
+    is_orm = _is_orm_file(file_path)
+    is_schema = _is_schema_file(file_path)
+    is_router = _is_router_file(file_path)
+
+    # ORM-specific checks (only for infrastructure/ORM model files)
+    if is_orm:
+        # 1. SQLAlchemy 2.0 style
         has_mapped = bool(re.search(r"Mapped\[", code))
         has_legacy = bool(re.search(r"Column\(", code))
         _check(result, "sqlalchemy_2_0_style", has_mapped and not has_legacy)
@@ -112,18 +161,18 @@ def validate_backend_file(file_path: str, code: str) -> FileResult:
         if "name_en" in code:
             _check(result, "bilingual_fields", "name_ar" in code)
 
-    # 7. Schemas: ConfigDict(from_attributes=True)
-    if "schemas" in file_path:
+    # Schema checks (for any schema file)
+    if is_schema:
         if "Response" in code or "Read" in code:
             has_config = bool(re.search(r"from_attributes\s*=\s*True", code))
             _check(result, "schema_from_attributes", has_config)
 
-    # 8. Router: async def + Depends
-    if "router" in file_path:
+    # Router checks
+    if is_router:
         has_async = bool(re.search(r"async\s+def", code))
         _check(result, "async_endpoints", has_async)
 
-    # 9. No SQL string interpolation
+    # Universal checks (apply to all files)
     has_f_sql = bool(re.search(r'f["\'].*(?:SELECT|INSERT|UPDATE|DELETE)', code, re.IGNORECASE))
     _check(result, "no_sql_injection", not has_f_sql)
 
@@ -223,7 +272,12 @@ def validate_frontend_file(file_path: str, code: str) -> FileResult:
 def validate_backend_module(module_name: str, files: dict[str, str]) -> ModuleValidation:
     result = ModuleValidation(module_name=module_name)
     for path, code in files.items():
-        result.file_results.append(validate_backend_file(path, code))
+        file_result = validate_backend_file(path, code)
+        # Only include files that actually had checks run
+        if file_result.passed or file_result.failed:
+            result.file_results.append(file_result)
+        else:
+            logger.debug(f"Skipped {path} (no applicable checks)")
     return result
 
 
